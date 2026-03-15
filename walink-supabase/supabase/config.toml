@@ -1,0 +1,42 @@
+# ============================================================
+# Supabase CLI Configuration
+# Replace "your-project-id" with your actual Supabase project ref.
+# Find it at: https://supabase.com/dashboard → Project Settings → General
+# ============================================================
+
+[api]
+# Port to use for the local Supabase API server
+port = 54321
+
+[db]
+# Port to use for the local Supabase Postgres database
+port = 54322
+
+[studio]
+# Port to use for the local Supabase Studio web UI
+port = 54323
+
+[inbucket]
+# Port for the local email testing service (Inbucket)
+port = 54324
+
+[storage]
+# Max file size in bytes for Storage uploads (100 MB default)
+file_size_limit = "104857600"
+
+[auth]
+# Site URL used in auth emails — update for local and production
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000"]
+
+# Token expiry settings
+jwt_expiry = 3600
+
+[auth.email]
+# Enable email/password sign-in
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+[analytics]
+enabled = false

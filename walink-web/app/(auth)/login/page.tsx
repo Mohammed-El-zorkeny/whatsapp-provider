@@ -59,14 +59,7 @@ export default function LoginPage() {
 
         if (profile?.role === "admin") {
           toast.success("Welcome Admin!");
-          // Use dynamic env variable. If not set, fallback to relative path (assuming proxy setup)
-          const adminUrl = process.env.NEXT_PUBLIC_ADMIN_URL;
-          if (adminUrl) {
-             window.location.href = `${adminUrl}/admin/dashboard`;
-          } else {
-             // Fallback if no env variable is set: just go to /admin/dashboard relative to current origin
-             window.location.href = "/admin/dashboard";
-          }
+          router.push("/admin/dashboard");
           return;
         }
       }

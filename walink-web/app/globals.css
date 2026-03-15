@@ -1,0 +1,75 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-primary: #6C47FF;
+  --color-primary-dark: #4B2FD4;
+  --color-primary-light: #EDE9FF;
+  
+  --color-accent: #00D4A0;
+  --color-accent-light: #E0FBF4;
+  
+  --color-background: #0D0D14;
+  --color-surface-1: #13131F;
+  --color-surface-2: #1C1C2E;
+  
+  --color-border-color: #2A2A3D;
+  
+  --color-text-primary: #F0EFFF;
+  --color-text-secondary: #9896B8;
+  --color-text-muted: #5E5C7A;
+  
+  --color-success: #00C97A;
+  --color-warning: #F5A623;
+  --color-danger: #FF4D6A;
+
+  /* Shadcn mappings using custom theme tokens where applicable */
+  --color-foreground: var(--color-text-primary);
+  --color-card: var(--color-surface-1);
+  --color-card-foreground: var(--color-text-primary);
+  --color-popover: var(--color-surface-2);
+  --color-popover-foreground: var(--color-text-secondary);
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: var(--color-surface-2);
+  --color-secondary-foreground: var(--color-text-primary);
+  --color-muted: var(--color-surface-1);
+  --color-muted-foreground: var(--color-text-muted);
+  --color-destructive: var(--color-danger);
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: var(--color-border-color);
+  --color-input: var(--color-border-color);
+  --color-ring: var(--color-primary);
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+:root {
+  --radius: 8px;
+  /* Next.js tailwind 4 dark theme forced map */
+  --background: var(--color-background);
+  --foreground: var(--color-text-primary);
+}
+
+.dark {
+  --background: var(--color-background);
+  --foreground: var(--color-text-primary);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-text-primary;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}

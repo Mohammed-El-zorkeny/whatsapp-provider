@@ -1,0 +1,373 @@
+"use client";
+
+import { useEffect, useState, useRef, useCallback } from "react";
+import { createClient } from "@/lib/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { PlanBadge } from "@/components/shared/PlanBadge";
+import { CreditCard, Search, Loader2, CheckCircle, FileText } from "lucide-react";
+import { toast } from "sonner";
+import { format } from "date-fns";
+import Link from "next/link";
+
+interface UserResult {
+  id: string;
+  full_name: string;
+  email: string;
+  plan_id: string;
+  credits_balance: number;
+}
+
+interface RecentCredit {
+  id: string;
+  user_name: string;
+  user_email: string;
+  amount: number;
+  created_at: string;
+  invoice_number?: string;
+}
+
+export default function CreditsPage() {
+  const supabase = createClient();
+  const searchTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Form
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<UserResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<UserResult | null>(null);
+  const [amount, setAmount] = useState("");
+  const [planChange, setPlanChange] = useState("keep");
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [invoiceId, setInvoiceId] = useState<string | null>(null);
+
+  // Recent
+  const [recentCredits, setRecentCredits] = useState<RecentCredit[]>([]);
+
+  const searchUsers = useCallback(async (query: string) => {
+    if (query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    setSearching(true);
+    const { data } = await supabase
+      .from("profiles")
+      .select("id, full_name, email, plan_id, credits_balance")
+      .eq("role", "user")
+      .or(`full_name.ilike.%${query}%,email.ilike.%${query}%`)
+      .limit(8);
+
+    setSearchResults(data || []);
+    setSearching(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => searchUsers(searchQuery), 400);
+    return () => { if (searchTimer.current) clearTimeout(searchTimer.current); };
+  }, [searchQuery, searchUsers]);
+
+  useEffect(() => {
+    const fetchRecent = async () => {
+      const { data: txns } = await supabase
+        .from("credit_transactions")
+        .select("id, user_id, amount, created_at, description")
+        .eq("type", "purchase")
+        .order("created_at", { ascending: false })
+        .limit(10);
+
+      if (!txns?.length) return;
+
+      const userIds = [...new Set(txns.map((t) => t.user_id))];
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("id, full_name, email")
+        .in("id", userIds);
+
+      const profileMap = new Map(profiles?.map((p) => [p.id, p]) || []);
+
+      setRecentCredits(
+        txns.map((t) => ({
+          id: t.id,
+          user_name: profileMap.get(t.user_id)?.full_name || "—",
+          user_email: profileMap.get(t.user_id)?.email || "",
+          amount: t.amount,
+          created_at: t.created_at,
+        }))
+      );
+    };
+    fetchRecent();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [success]);
+
+  const handleSubmit = async () => {
+    if (!selectedUser || !amount) return;
+    const creditAmount = parseInt(amount);
+    if (isNaN(creditAmount) || creditAmount < 1) {
+      toast.error("Invalid amount");
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      // 1. Get admin ID
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) throw new Error("Not authenticated");
+
+      // 2. Add credits via RPC
+      const { data: rpcResult, error: rpcError } = await supabase.rpc("add_credits", {
+        p_user_id: selectedUser.id,
+        p_amount: creditAmount,
+        p_type: "purchase",
+        p_description: notes || `Admin credit addition: ${creditAmount} credits`,
+      });
+      if (rpcError) throw rpcError;
+      const result = typeof rpcResult === 'string' ? JSON.parse(rpcResult) : rpcResult;
+      if (!result?.success) throw new Error(result?.error || "RPC failed");
+
+      // 3. Update plan if changed
+      const newPlanId = planChange !== "keep" ? planChange : selectedUser.plan_id;
+      if (planChange !== "keep") {
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 30);
+        await supabase
+          .from("profiles")
+          .update({ plan_id: newPlanId, plan_expires_at: expiresAt.toISOString() })
+          .eq("id", selectedUser.id);
+      }
+
+      // 4. Create invoice — invoice_number auto-generated by DB trigger
+      const priceCentsMap: Record<string, number> = { free: 0, starter: 900, pro: 2500, business: 6000 };
+      const amountCents = priceCentsMap[newPlanId] || Math.round(creditAmount * 0.5);
+
+      const { data: invoice, error: invError } = await supabase
+        .from("invoices")
+        .insert({
+          user_id: selectedUser.id,
+          invoice_number: "placeholder",
+          amount_cents: amountCents,
+          credits_added: creditAmount,
+          plan_id: newPlanId,
+          notes: notes || null,
+          issued_by: authUser.id,
+        })
+        .select("id")
+        .single();
+      if (invError) console.error("Invoice error:", invError);
+      if (invoice) setInvoiceId(invoice.id);
+
+      // 5. Send notification
+      await supabase.from("notifications").insert({
+        user_id: selectedUser.id,
+        title: "Credits Added",
+        message: `${creditAmount} credits have been added to your account.`,
+        type: "success",
+      });
+
+      setSuccess(true);
+      toast.success(`Added ${creditAmount} credits to ${selectedUser.full_name || selectedUser.email}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Operation failed";
+      toast.error(message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    setSelectedUser(null);
+    setSearchQuery("");
+    setAmount("");
+    setPlanChange("keep");
+    setNotes("");
+    setSuccess(false);
+    setInvoiceId(null);
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Main Form */}
+      <div className="lg:col-span-2">
+        <div className="rounded-xl border border-border-color/50 bg-surface-1 overflow-hidden">
+          <div className="px-6 py-4 border-b border-border-color/50 flex items-center gap-2">
+            <CreditCard className="w-5 h-5 text-primary" />
+            <h2 className="text-lg font-semibold text-text-primary">Add Credits</h2>
+          </div>
+
+          {success ? (
+            <div className="p-8 text-center space-y-4">
+              <div className="w-16 h-16 rounded-full bg-success/10 border border-success/20 flex items-center justify-center mx-auto">
+                <CheckCircle className="w-8 h-8 text-success" />
+              </div>
+              <h3 className="text-xl font-bold text-text-primary">Credits Added Successfully!</h3>
+              <p className="text-text-secondary">
+                {amount} credits have been added to {selectedUser?.full_name || selectedUser?.email}.
+              </p>
+              <div className="flex items-center justify-center gap-3 pt-2">
+                {invoiceId && (
+                  <Link href={`/admin/invoices/${invoiceId}`}>
+                    <Button variant="outline" className="gap-1.5 cursor-pointer">
+                      <FileText className="w-4 h-4" />
+                      View Invoice
+                    </Button>
+                  </Link>
+                )}
+                <Button onClick={resetForm} className="bg-primary hover:bg-primary-dark text-primary-foreground cursor-pointer">
+                  Add More Credits
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 space-y-5">
+              {/* User Search */}
+              <div className="space-y-2">
+                <Label>Search User</Label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+                  <Input
+                    placeholder="Type name or email…"
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setSelectedUser(null);
+                    }}
+                    className="pl-10 bg-surface-2 border-border-color"
+                  />
+                  {searching && (
+                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-text-muted" />
+                  )}
+                </div>
+
+                {/* Search Dropdown */}
+                {searchResults.length > 0 && !selectedUser && (
+                  <div className="rounded-lg border border-border-color bg-surface-2 shadow-lg max-h-48 overflow-y-auto">
+                    {searchResults.map((u) => (
+                      <button
+                        key={u.id}
+                        onClick={() => {
+                          setSelectedUser(u);
+                          setSearchQuery(u.full_name || u.email);
+                          setSearchResults([]);
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-surface-1 transition-colors flex items-center justify-between cursor-pointer"
+                      >
+                        <div>
+                          <p className="text-sm font-medium text-text-primary">{u.full_name || "—"}</p>
+                          <p className="text-xs text-text-muted">{u.email}</p>
+                        </div>
+                        <PlanBadge planId={u.plan_id} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Selected user info */}
+                {selectedUser && (
+                  <div className="rounded-lg bg-primary/5 border border-primary/15 p-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-text-primary">{selectedUser.full_name || "—"}</p>
+                      <p className="text-xs text-text-muted">{selectedUser.email} • Balance: {selectedUser.credits_balance}</p>
+                    </div>
+                    <PlanBadge planId={selectedUser.plan_id} />
+                  </div>
+                )}
+              </div>
+
+              {/* Credits Amount */}
+              <div className="space-y-2">
+                <Label>Credits Amount</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={100000}
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="Enter credits amount"
+                  className="bg-surface-2 border-border-color"
+                />
+              </div>
+
+              {/* Plan Change */}
+              <div className="space-y-2">
+                <Label>Change Plan (Optional)</Label>
+                <Select value={planChange} onValueChange={setPlanChange}>
+                  <SelectTrigger className="bg-surface-2 border-border-color">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="keep">Keep Current Plan</SelectItem>
+                    <SelectItem value="starter">Starter ($9/mo)</SelectItem>
+                    <SelectItem value="pro">Pro ($25/mo)</SelectItem>
+                    <SelectItem value="business">Business ($60/mo)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Notes */}
+              <div className="space-y-2">
+                <Label>Notes (appears on invoice)</Label>
+                <Textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Optional notes…"
+                  rows={3}
+                  className="bg-surface-2 border-border-color resize-none"
+                />
+              </div>
+
+              <Button
+                onClick={handleSubmit}
+                disabled={submitting || !selectedUser || !amount}
+                className="w-full bg-primary hover:bg-primary-dark text-primary-foreground font-semibold h-11 cursor-pointer"
+              >
+                {submitting ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : (
+                  <CreditCard className="w-4 h-4 mr-2" />
+                )}
+                Generate Invoice & Add Credits
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Recent Activity */}
+      <div>
+        <div className="rounded-xl border border-border-color/50 bg-surface-1 overflow-hidden">
+          <div className="px-5 py-4 border-b border-border-color/50">
+            <h3 className="font-semibold text-text-primary">Recent Additions</h3>
+            <p className="text-xs text-text-muted mt-0.5">Last 10 credit additions</p>
+          </div>
+          <div className="divide-y divide-border-color/20">
+            {recentCredits.length > 0 ? recentCredits.map((rc) => (
+              <div key={rc.id} className="px-5 py-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-text-primary truncate">{rc.user_name}</p>
+                  <span className="text-sm font-semibold text-success font-mono">+{rc.amount}</span>
+                </div>
+                <p className="text-xs text-text-muted">{rc.user_email}</p>
+                <p className="text-xs text-text-muted mt-0.5">{format(new Date(rc.created_at), "MMM dd, yyyy HH:mm")}</p>
+              </div>
+            )) : (
+              <p className="px-5 py-6 text-center text-text-muted text-sm">No credit additions yet</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
